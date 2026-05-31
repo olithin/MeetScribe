@@ -29,7 +29,7 @@ No cloud upload. Your video stays on your machine.
 | **Playback speed** | `0.5x` – `2x` |
 | **Resizable layout** | Drag the splitter between video and text |
 | **Video trim** | Save a clip, remove start, or remove end (FFmpeg) |
-| **Smart output** | Full transcript, 5-minute chapters, session log |
+| **Smart output** | Full transcript saved next to the video |
 
 ```mermaid
 flowchart LR
@@ -37,8 +37,6 @@ flowchart LR
     App --> Player[Video player + trim]
     App --> Whisper[Whisper local]
     Whisper --> TXT[transcription.txt]
-    Whisper --> Chapters[by_5min.txt]
-    App --> Log[log.txt]
     TXT --> Click[Click timestamp]
     Click --> Player
 ```
@@ -124,21 +122,12 @@ chmod +x run.sh
 | File | Description |
 |------|-------------|
 | `{name}_transcription.txt` | Full text with `[MM:SS]` per phrase |
-| `{name}_by_5min.txt` | 5-minute blocks — jump to any part of the call |
-| `{name}_log.txt` | Session log + on-screen result |
 
-**Example (`by_5min.txt`):**
+**Example (`transcription.txt`):**
 
 ```
-========================================================================
-[00:00 — 05:00]  — seek video to this mark
-========================================================================
-
 [00:00] Good morning, let's start the meeting.
 [00:05] Today we'll review the sprint plan.
-
---- Block text ---
-Good morning, let's start the meeting. Today we'll review the sprint plan.
 ```
 
 ### Whisper models

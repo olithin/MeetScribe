@@ -28,8 +28,6 @@ desktop.ini
 *.mp4
 *.wav
 *_transcription.txt
-*_by_5min.txt
-*_log.txt
 *.partial
 
 # Secrets

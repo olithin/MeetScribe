@@ -1,4 +1,4 @@
-"""Core transcription logic (FFmpeg check, Whisper, file output)."""
+"""Core transcription logic (FFmpeg check, Whisper, GPU, file output)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,52 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+from config import (
+    OBSIDIAN_VAULT_PATH,
+    OUTPUT_FILE_EXTENSION,
+    PARAGRAPH_MAX_SECONDS,
+    PARAGRAPH_TARGET_SECONDS,
+)
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[float], None]
 
-INTERVAL_SECONDS = 300  # 5 minutes — block size for chapter-style navigation
+# NVIDIA CUDA PyTorch (Windows, CUDA 12.4):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# NVIDIA CUDA PyTorch (Windows, CUDA 12.1):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# CPU-only fallback:
+#   pip install torch torchvision torchaudio
+
+
+def resolve_device() -> str:
+    """Return 'cuda' when an NVIDIA GPU is available, otherwise 'cpu'."""
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError(
+            "PyTorch is not installed. Install it with CUDA support (see transcription_service.py)."
+        ) from exc
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def describe_device(device: str) -> str:
+    """Human-readable device label for logs."""
+    if device != "cuda":
+        return "cpu"
+
+    try:
+        import torch
+
+        name = torch.cuda.get_device_name(0)
+        return f"cuda ({name})"
+    except Exception:
+        return "cuda"
 
 
 def _windows_ffmpeg_candidates() -> list[Path]:
@@ -34,7 +73,6 @@ def _windows_ffmpeg_candidates() -> list[Path]:
 
 def resolve_ffmpeg_path() -> Path | None:
     """Return FFmpeg executable path if found on PATH or in known install dirs."""
-    ffmpeg_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
     ffmpeg_on_path = shutil.which("ffmpeg")
     if ffmpeg_on_path:
         return Path(ffmpeg_on_path)
@@ -74,115 +112,119 @@ def format_timestamp(seconds: float) -> str:
     return f"[{minutes:02d}:{secs:02d}]"
 
 
-def format_time_range(start_seconds: float, end_seconds: float) -> str:
-    """Format an interval label for seeking in a video player."""
-    start = format_timestamp(start_seconds).strip("[]")
-    end = format_timestamp(end_seconds).strip("[]")
-    return f"[{start} — {end}]"
+def group_segments_into_paragraphs(
+    segments: list[dict],
+    target_seconds: int = PARAGRAPH_TARGET_SECONDS,
+    max_seconds: int = PARAGRAPH_MAX_SECONDS,
+) -> list[tuple[float, str]]:
+    """
+    Merge Whisper segments into readable paragraphs (~30–60 s each).
 
+    A new paragraph starts when the block reaches target length, exceeds max length,
+    or the speaker pauses for more than 2 seconds.
+    """
+    paragraphs: list[tuple[float, str]] = []
+    block_start: float | None = None
+    block_end: float = 0.0
+    block_texts: list[str] = []
 
-def format_segments_with_timestamps(segments: list[dict]) -> str:
-    """Build UI/file text with one timestamped line per Whisper segment."""
-    lines: list[str] = []
+    def flush() -> None:
+        nonlocal block_start, block_end, block_texts
+        if block_start is None or not block_texts:
+            block_start = None
+            block_texts = []
+            return
+        paragraphs.append((block_start, " ".join(block_texts)))
+        block_start = None
+        block_texts = []
+
     for segment in segments:
         text = segment.get("text", "").strip()
         if not text:
             continue
-        timestamp = format_timestamp(segment.get("start", 0.0))
-        lines.append(f"{timestamp} {text}")
-    return "\n".join(lines)
+
+        start = float(segment.get("start", 0.0))
+        end = float(segment.get("end", start))
+
+        if block_start is None:
+            block_start = start
+            block_texts = [text]
+            block_end = end
+            continue
+
+        pause_seconds = start - block_end
+        block_duration = block_end - block_start
+
+        if pause_seconds > 2.0 or block_duration >= target_seconds:
+            flush()
+            block_start = start
+            block_texts = [text]
+            block_end = end
+            continue
+
+        block_texts.append(text)
+        block_end = end
+
+        if block_end - block_start >= max_seconds:
+            flush()
+
+    flush()
+    return paragraphs
 
 
-def group_segments_by_interval(
+def format_segments_grouped(
     segments: list[dict],
-    interval_seconds: int = INTERVAL_SECONDS,
-) -> list[tuple[int, int, list[dict]]]:
-    """Group Whisper segments into fixed time blocks (default 5 min)."""
-    if not segments:
-        return []
-
-    max_end = max(segment.get("end", 0.0) for segment in segments)
-    blocks: list[tuple[int, int, list[dict]]] = []
-
-    block_start = 0
-    while block_start <= max_end:
-        block_end = block_start + interval_seconds
-        block_segments = [
-            segment
-            for segment in segments
-            if block_start <= segment.get("start", 0.0) < block_end
-        ]
-        if block_segments:
-            blocks.append((block_start, block_end, block_segments))
-        block_start += interval_seconds
-
-    return blocks
-
-
-def format_segments_by_interval(
-    segments: list[dict],
-    interval_seconds: int = INTERVAL_SECONDS,
+    target_seconds: int = PARAGRAPH_TARGET_SECONDS,
+    max_seconds: int = PARAGRAPH_MAX_SECONDS,
 ) -> str:
-    """Build chapter-style text grouped by 5-minute blocks for video navigation."""
-    blocks = group_segments_by_interval(segments, interval_seconds)
-    if not blocks:
+    """Build LLM-friendly text: one timestamp per logical paragraph."""
+    paragraphs = group_segments_into_paragraphs(segments, target_seconds, max_seconds)
+    if not paragraphs:
         return ""
 
-    parts: list[str] = []
-    separator = "=" * 72
+    lines = [
+        f"{format_timestamp(start)} {text}"
+        for start, text in paragraphs
+    ]
+    return "\n\n".join(lines)
 
-    for block_start, block_end, block_segments in blocks:
-        range_label = format_time_range(block_start, block_end)
-        parts.append(separator)
-        parts.append(f"{range_label}  — seek video to this mark")
-        parts.append(separator)
-        parts.append("")
 
-        for segment in block_segments:
-            text = segment.get("text", "").strip()
-            if not text:
-                continue
-            timestamp = format_timestamp(segment.get("start", 0.0))
-            parts.append(f"{timestamp} {text}")
-
-        summary_parts = [
-            segment.get("text", "").strip()
-            for segment in block_segments
-            if segment.get("text", "").strip()
-        ]
-        if summary_parts:
-            parts.append("")
-            parts.append("--- Block text ---")
-            parts.append(" ".join(summary_parts))
-            parts.append("")
-
-    return "\n".join(parts).rstrip() + "\n"
+def build_metadata_header(video_name: str, processed_at: datetime | None = None) -> str:
+    """YAML-style header for Obsidian / AnythingLLM."""
+    when = processed_at or datetime.now()
+    date_label = when.strftime("%Y-%m-%d %H:%M")
+    return (
+        "---\n"
+        f"Название: {video_name}\n"
+        f"Дата обработки: {date_label}\n"
+        "Источник: Локальное видео\n"
+        "---\n\n"
+    )
 
 
 def resolve_output_dir(video_path: Path, output_dir: Path | None) -> Path:
-    """Return folder for output files; default is the source video directory."""
+    """
+    Return folder for output files.
+
+    Priority: GUI output folder → Obsidian vault path → video directory.
+    """
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
+
+    if OBSIDIAN_VAULT_PATH is not None:
+        obsidian_dir = Path(OBSIDIAN_VAULT_PATH)
+        obsidian_dir.mkdir(parents=True, exist_ok=True)
+        return obsidian_dir
+
     return video_path.parent
 
 
 def build_output_path(video_path: Path, output_dir: Path | None = None) -> Path:
-    """Return transcription path in the chosen output folder."""
+    """Return transcription path: {name}_transcription.txt or .md."""
     target_dir = resolve_output_dir(video_path, output_dir)
-    return target_dir / f"{video_path.stem}_transcription.txt"
-
-
-def build_chapters_output_path(video_path: Path, output_dir: Path | None = None) -> Path:
-    """Return 5-minute chapter file path in the chosen output folder."""
-    target_dir = resolve_output_dir(video_path, output_dir)
-    return target_dir / f"{video_path.stem}_by_5min.txt"
-
-
-def build_log_output_path(video_path: Path, output_dir: Path | None = None) -> Path:
-    """Return session log file path in the chosen output folder."""
-    target_dir = resolve_output_dir(video_path, output_dir)
-    return target_dir / f"{video_path.stem}_log.txt"
+    extension = OUTPUT_FILE_EXTENSION if OUTPUT_FILE_EXTENSION in {".txt", ".md"} else ".md"
+    return target_dir / f"{video_path.stem}_transcription{extension}"
 
 
 def save_transcription(output_path: Path, content: str) -> None:
@@ -249,6 +291,62 @@ def get_whisper_audio_source(video_path: Path, log: LogCallback) -> Path:
     return cached_audio
 
 
+def _load_whisper_model(model_name: str, device: str, log: LogCallback):
+    """Load Whisper model and move it to the selected device."""
+    import whisper
+
+    try:
+        model = whisper.load_model(model_name)
+        model.to(device)
+        return model
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if device == "cuda" and ("out of memory" in error_text or "cuda" in error_text):
+            log("Не удалось загрузить модель на GPU — переключение на CPU...")
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            model = whisper.load_model(model_name)
+            model.to("cpu")
+            return model
+        raise RuntimeError(
+            f"Failed to load model '{model_name}'. "
+            f"Try a smaller model if you run out of memory. Details: {exc}"
+        ) from exc
+
+
+def _transcribe_audio(model, audio_source: Path, device: str, log: LogCallback) -> dict:
+    """Run Whisper transcribe with fp16 on CUDA and safe CPU fallback."""
+    import torch
+
+    use_fp16 = device == "cuda"
+    audio_path = str(audio_source)
+
+    try:
+        return model.transcribe(audio_path, verbose=False, fp16=use_fp16)
+    except RuntimeError as exc:
+        error_text = str(exc).lower()
+        if device == "cuda" and "out of memory" in error_text:
+            log("Нехватка VRAM на GPU — повтор на CPU (fp16=False)...")
+            model.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return model.transcribe(audio_path, verbose=False, fp16=False)
+        raise
+    except MemoryError:
+        raise
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if "cuda" in error_text and "out of memory" in error_text:
+            log("Нехватка VRAM на GPU — повтор на CPU (fp16=False)...")
+            model.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return model.transcribe(audio_path, verbose=False, fp16=False)
+        raise
+
+
 def transcribe_video(
     video_path: Path,
     model_name: str,
@@ -259,10 +357,8 @@ def transcribe_video(
     """
     Load Whisper model and transcribe the given video file.
 
-    Whisper reads MP4 directly when FFmpeg is installed.
+    Uses CUDA + fp16 when available; falls back to CPU on VRAM errors.
     """
-    import whisper
-
     if not video_path.is_file():
         raise FileNotFoundError(f"File not found: {video_path}")
 
@@ -281,15 +377,21 @@ def transcribe_video(
     ffmpeg_path = resolve_ffmpeg_path()
     log(f"FFmpeg found: {ffmpeg_path}")
 
+    device = resolve_device()
+    device_label = describe_device(device)
+    startup_message = f"Транскрибация запущена на устройстве: {device_label}"
+    print(startup_message)
+    log(startup_message)
+
     set_progress(0.15)
-    log(f"Loading Whisper model '{model_name}'...")
-    try:
-        model = whisper.load_model(model_name)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Failed to load model '{model_name}'. "
-            f"Try a smaller model if you run out of memory. Details: {exc}"
-        ) from exc
+    log(f"Loading Whisper model '{model_name}' on {device_label}...")
+    model = _load_whisper_model(model_name, device, log)
+    active_device = next(model.parameters()).device.type
+    use_fp16 = active_device == "cuda"
+    if use_fp16:
+        log("FP16 включён (CUDA).")
+    else:
+        log("FP16 выключен (CPU).")
 
     set_progress(0.25)
     audio_source = get_whisper_audio_source(video_path, log)
@@ -298,7 +400,7 @@ def transcribe_video(
     log("Transcription started. This may take a while...")
 
     try:
-        result = model.transcribe(str(audio_source), verbose=False)
+        result = _transcribe_audio(model, audio_source, active_device, log)
     except MemoryError as exc:
         raise MemoryError(
             f"Not enough memory for model '{model_name}'. "
@@ -306,11 +408,6 @@ def transcribe_video(
         ) from exc
     except Exception as exc:
         error_text = str(exc).lower()
-        if "cuda" in error_text and "out of memory" in error_text:
-            raise MemoryError(
-                f"Not enough GPU memory for model '{model_name}'. "
-                "Try a smaller model or close other GPU applications."
-            ) from exc
         if "invalid data" in error_text or "moov atom not found" in error_text:
             raise ValueError(
                 "The video file is corrupted or was not fully downloaded."
@@ -319,23 +416,20 @@ def transcribe_video(
 
     set_progress(0.85)
     segments = result.get("segments", [])
-    formatted_text = format_segments_with_timestamps(segments)
+    body_text = format_segments_grouped(segments)
 
-    if not formatted_text.strip():
-        formatted_text = result.get("text", "").strip()
-        if not formatted_text:
+    if not body_text.strip():
+        body_text = result.get("text", "").strip()
+        if not body_text:
             raise RuntimeError("Transcription returned empty text.")
+
+    processed_at = datetime.now()
+    file_content = build_metadata_header(video_path.stem, processed_at) + body_text
 
     output_path = build_output_path(video_path, output_dir)
     log(f"Saving result: {output_path}")
-    save_transcription(output_path, formatted_text)
-
-    chapters_text = format_segments_by_interval(segments)
-    if chapters_text.strip():
-        chapters_path = build_chapters_output_path(video_path, output_dir)
-        log(f"Saving 5-minute chapters: {chapters_path}")
-        save_transcription(chapters_path, chapters_text)
+    save_transcription(output_path, file_content)
 
     set_progress(1.0)
     log("Transcription completed successfully.")
-    return formatted_text
+    return body_text

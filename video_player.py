@@ -138,6 +138,7 @@ class VideoPlayerPanel(ctk.CTkFrame):
         self._video_surface = tk.Frame(self._video_container, bg="#101010")
         self._video_surface.grid(row=0, column=0, sticky="nsew")
         self._video_surface.bind("<Configure>", self._on_video_surface_configure)
+        self._bind_video_click(self._video_surface)
 
         self._video_background = tk.Frame(self._video_surface, bg="#101010")
         self._video_background.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -148,6 +149,7 @@ class VideoPlayerPanel(ctk.CTkFrame):
             fg=palette.video_overlay_fg,
             text="Select an MP4 file",
         )
+        self._bind_video_click(self._opencv_label)
         self._opencv_label.place(relx=0, rely=0, relwidth=1, relheight=1)
 
         self._theater_placeholder = ctk.CTkFrame(self._video_container, fg_color="#151515", corner_radius=0)
@@ -379,6 +381,7 @@ class VideoPlayerPanel(ctk.CTkFrame):
             self._vlc_instance = vlc.Instance("--no-video-title-show", "--quiet")
             self._vlc_player = self._vlc_instance.media_player_new()
             self._using_vlc = True
+            self._configure_vlc_input()
             self._embed_vlc()
             self._set_status("VLC ready — audio playback enabled.")
         except Exception:
@@ -391,6 +394,25 @@ class VideoPlayerPanel(ctk.CTkFrame):
     @property
     def has_vlc(self) -> bool:
         return self._using_vlc
+
+    def _configure_vlc_input(self) -> None:
+        """Route mouse clicks to Tk instead of VLC (click video to pause/play)."""
+        if not self._using_vlc or not self._vlc_player:
+            return
+        try:
+            self._vlc_player.video_set_mouse_input(0)
+            self._vlc_player.video_set_key_input(0)
+        except Exception:
+            pass
+
+    def _bind_video_click(self, surface: tk.Widget) -> None:
+        surface.bind("<Button-1>", self._on_video_click)
+        surface.configure(cursor="hand2")
+
+    def _on_video_click(self, _event: tk.Event) -> None:
+        if self._video_path is None:
+            return
+        self.toggle_play()
 
     def _embed_surface(self) -> tk.Frame:
         if self._external_surface is not None and self._external_surface.winfo_exists():
@@ -584,6 +606,8 @@ class VideoPlayerPanel(ctk.CTkFrame):
             if was_playing:
                 self._vlc_player.pause()
             self._apply_vlc_hwnd(window_id)
+
+        self._configure_vlc_input()
 
         self._embedded_window_id = window_id
         self._embedded_surface_size = surface_size
@@ -876,6 +900,7 @@ class VideoTheaterWindow(tk.Toplevel):
         self._surface.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
         self._surface.bind("<Configure>", self._on_surface_configure)
         self._surface.bind("<Double-Button-1>", lambda _e: self.toggle_fullscreen())
+        player._bind_video_click(self._surface)
 
         controls = ctk.CTkFrame(self, fg_color="transparent")
         controls.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))

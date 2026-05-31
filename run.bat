@@ -23,14 +23,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-"%PYTHON_EXE%" main.py
-set "EXIT_CODE=%ERRORLEVEL%"
-if %EXIT_CODE% neq 0 (
-    echo.
-    echo [MeetScribe] Startup failed. See README.md — Troubleshooting.
-    pause
-)
-exit /b %EXIT_CODE%
+set "PYTHONW_EXE=%PYTHON_EXE:python.exe=pythonw.exe%"
+if not exist "%PYTHONW_EXE%" set "PYTHONW_EXE=%PYTHON_EXE%"
+start "" "%PYTHONW_EXE%" main.py
+exit /b 0
 
 :ResolvePython
 set "PYTHON_EXE="

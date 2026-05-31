@@ -1,6 +1,8 @@
-customtkinter>=5.2.0
-openai-whisper>=20231117
-torch>=2.0.0
-python-vlc>=3.0.0
-opencv-python>=4.8.0
-Pillow>=10.0.0
+customtkinter>=5.2.0
+openai-whisper>=20231117
+# CPU build (default). For NVIDIA GPU on Windows (CUDA 12.4), install PyTorch first:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+torch>=2.0.0
+python-vlc>=3.0.0
+opencv-python>=4.8.0
+Pillow>=10.0.0

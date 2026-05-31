@@ -13,9 +13,9 @@ import customtkinter as ctk
 
 from clickable_text import insert_clickable_transcription
 from transcription_service import (
-    build_log_output_path,
     check_ffmpeg,
-    save_transcription,
+    describe_device,
+    resolve_device,
     transcribe_video,
 )
 from ui_theme import (
@@ -308,6 +308,12 @@ class TranscriptionApp(ctk.CTk):
 
     def _log_startup_checks(self) -> None:
         self._append_log("Application started.")
+        try:
+            device_label = describe_device(resolve_device())
+            self._append_log(f"Whisper device: {device_label}")
+        except RuntimeError as exc:
+            self._append_log(f"WARNING: {exc}")
+
         if check_ffmpeg():
             self._append_log("FFmpeg detected.")
         else:
@@ -510,25 +516,7 @@ class TranscriptionApp(ctk.CTk):
                 ),
             )
         finally:
-            self.after(0, lambda: self._save_session_log(video_path, output_dir))
             self.after(0, lambda: self._set_running_state(False))
-
-    def _save_session_log(self, video_path: Path, output_dir: Path | None) -> None:
-        log_path = build_log_output_path(video_path, output_dir)
-        log_content = self.log_textbox.get("1.0", "end").strip()
-        transcription_content = self.transcription_textbox.get("1.0", "end").strip()
-        combined = log_content
-        if transcription_content:
-            combined += "\n\n--- Transcription ---\n" + transcription_content
-
-        if not combined.strip():
-            return
-
-        try:
-            save_transcription(log_path, combined + "\n")
-            self._append_log(f"Saving log: {log_path}")
-        except OSError as exc:
-            self._append_log(f"Failed to save log: {exc}")
 
     def _show_result(self, text: str) -> None:
         self._last_transcription_text = text
