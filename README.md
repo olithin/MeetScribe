@@ -53,7 +53,16 @@ flowchart LR
 ## Quick start
 
 <details open>
-<summary><strong>Windows</strong></summary>
+<summary><strong>Windows — easiest</strong></summary>
+
+**First time only** — double-click **`install.bat`** (creates `.venv`, installs packages, optional FFmpeg/VLC, Desktop shortcut).
+
+**Every time** — double-click **`run.bat`** or the **MeetScribe** shortcut on your Desktop.
+
+`run.bat` also finds an existing venv automatically (`MEETSCRIBE_VENV`, `.venv`, or `%USERPROFILE%\.venvs\meet-scribe`).
+
+<details>
+<summary>Manual setup (advanced)</summary>
 
 ```powershell
 winget install Gyan.FFmpeg
@@ -76,7 +85,7 @@ PowerShell blocks venv? Run once:
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-Or double-click **`run.bat`** after `pip install` — no activation needed.
+</details>
 
 </details>
 

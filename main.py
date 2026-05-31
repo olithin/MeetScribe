@@ -18,6 +18,14 @@ from transcription_service import (
     save_transcription,
     transcribe_video,
 )
+from ui_theme import (
+    APPEARANCE_DARK,
+    APPEARANCE_LIGHT,
+    get_palette,
+    load_appearance_mode,
+    save_appearance_mode,
+    set_current_mode,
+)
 from video_player import VideoPlayerPanel
 from video_trim_service import export_clip, export_remove_end, export_remove_start
 
@@ -31,7 +39,6 @@ class TranscriptionApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
 
-        ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
         self.title("MeetScribe — meeting video to text")
@@ -44,21 +51,39 @@ class TranscriptionApp(ctk.CTk):
         self._trim_thread: threading.Thread | None = None
         self._is_running = False
         self._is_trimming = False
+        self._last_transcription_text: str | None = None
 
         self._build_ui()
+        self._apply_theme(load_appearance_mode(), save=False)
         self._log_startup_checks()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
+        palette = get_palette()
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(5, weight=1)
 
-        header = ctk.CTkLabel(
-            self,
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        self._header_label = ctk.CTkLabel(
+            header_frame,
             text="MeetScribe — meeting video to text",
             font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=palette.text_heading,
         )
-        header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
+        self._header_label.grid(row=0, column=0, sticky="w")
+
+        self._theme_switch = ctk.CTkSegmentedButton(
+            header_frame,
+            values=["Dark", "Light"],
+            width=130,
+            height=28,
+            command=self._on_theme_selected,
+        )
+        self._theme_switch.grid(row=0, column=1, sticky="e")
+        self._theme_switch.set("Dark")
 
         file_frame = ctk.CTkFrame(self)
         file_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
@@ -77,6 +102,7 @@ class TranscriptionApp(ctk.CTk):
             file_frame,
             textvariable=self.file_path_var,
             state="readonly",
+            text_color=palette.text_secondary,
         )
         self.file_path_entry.grid(row=0, column=1, padx=(0, 12), pady=12, sticky="ew")
 
@@ -97,6 +123,7 @@ class TranscriptionApp(ctk.CTk):
             output_frame,
             textvariable=self.output_dir_var,
             state="readonly",
+            text_color=palette.text_secondary,
         )
         self.output_dir_entry.grid(row=0, column=1, padx=(0, 8), pady=12, sticky="ew")
 
@@ -111,8 +138,12 @@ class TranscriptionApp(ctk.CTk):
         options_frame = ctk.CTkFrame(self)
         options_frame.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="ew")
 
-        model_label = ctk.CTkLabel(options_frame, text="Whisper model:")
-        model_label.grid(row=0, column=0, padx=(12, 8), pady=12)
+        self._model_label = ctk.CTkLabel(
+            options_frame,
+            text="Whisper model:",
+            text_color=palette.text_secondary,
+        )
+        self._model_label.grid(row=0, column=0, padx=(12, 8), pady=12)
 
         self.model_combo = ctk.CTkComboBox(
             options_frame,
@@ -137,8 +168,12 @@ class TranscriptionApp(ctk.CTk):
         progress_frame.grid(row=4, column=0, padx=20, pady=(0, 10), sticky="ew")
         progress_frame.grid_columnconfigure(0, weight=1)
 
-        self.progress_label = ctk.CTkLabel(progress_frame, text="Progress: 0%")
-        self.progress_label.grid(row=0, column=0, padx=12, pady=(10, 4), sticky="w")
+        self._progress_label = ctk.CTkLabel(
+            progress_frame,
+            text="Progress: 0%",
+            text_color=palette.text_secondary,
+        )
+        self._progress_label.grid(row=0, column=0, padx=12, pady=(10, 4), sticky="w")
 
         self.progress_bar = ctk.CTkProgressBar(progress_frame)
         self.progress_bar.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
@@ -155,7 +190,7 @@ class TranscriptionApp(ctk.CTk):
             sashwidth=6,
             sashrelief=tk.FLAT,
             opaqueresize=True,
-            bg="#2a2a2a",
+            bg=palette.paned_bg,
             bd=0,
             showhandle=False,
         )
@@ -174,23 +209,89 @@ class TranscriptionApp(ctk.CTk):
         right_panel.grid_columnconfigure(0, weight=1)
         right_panel.grid_rowconfigure(1, weight=1)
 
-        transcription_label = ctk.CTkLabel(
+        self._transcription_label = ctk.CTkLabel(
             right_panel,
             text="Transcription — click: seek | Shift+click: mark clip end:",
+            text_color=palette.text_secondary,
         )
-        transcription_label.grid(row=0, column=0, padx=0, pady=(0, 4), sticky="w")
+        self._transcription_label.grid(row=0, column=0, padx=0, pady=(0, 4), sticky="w")
 
-        self.transcription_textbox = ctk.CTkTextbox(right_panel, wrap="word", height=320)
+        self.transcription_textbox = ctk.CTkTextbox(
+            right_panel,
+            wrap="word",
+            height=320,
+            text_color=palette.text_primary,
+            fg_color=palette.textbox_bg,
+            border_color=palette.textbox_border,
+        )
         self.transcription_textbox.grid(row=1, column=0, pady=(0, 8), sticky="nsew")
         self._transcription_text = self.transcription_textbox._textbox
 
-        log_label = ctk.CTkLabel(right_panel, text="Logs:")
-        log_label.grid(row=2, column=0, padx=0, pady=(0, 4), sticky="w")
+        self._log_label = ctk.CTkLabel(
+            right_panel,
+            text="Logs:",
+            text_color=palette.text_secondary,
+        )
+        self._log_label.grid(row=2, column=0, padx=0, pady=(0, 4), sticky="w")
 
-        self.log_textbox = ctk.CTkTextbox(right_panel, wrap="word", height=140)
+        self.log_textbox = ctk.CTkTextbox(
+            right_panel,
+            wrap="word",
+            height=140,
+            text_color=palette.text_secondary,
+            fg_color=palette.textbox_bg,
+            border_color=palette.textbox_border,
+        )
         self.log_textbox.grid(row=3, column=0, sticky="ew")
 
         self.after(300, self._set_initial_pane_split)
+
+    def _on_theme_selected(self, value: str) -> None:
+        mode = APPEARANCE_DARK if value == "Dark" else APPEARANCE_LIGHT
+        self._apply_theme(mode)
+
+    def _apply_theme(self, mode: str, *, save: bool = True) -> None:
+        """Switch dark/light appearance and refresh custom text colors."""
+        palette = set_current_mode(mode)
+        ctk.set_appearance_mode(mode)
+
+        switch_value = "Dark" if mode == APPEARANCE_DARK else "Light"
+        if self._theme_switch.get() != switch_value:
+            self._theme_switch.set(switch_value)
+
+        self._header_label.configure(text_color=palette.text_heading)
+        self.file_path_entry.configure(text_color=palette.text_secondary)
+        self.output_dir_entry.configure(text_color=palette.text_secondary)
+        self._model_label.configure(text_color=palette.text_secondary)
+        self._progress_label.configure(text_color=palette.text_secondary)
+        self._transcription_label.configure(text_color=palette.text_secondary)
+        self._log_label.configure(text_color=palette.text_secondary)
+        self.transcription_textbox.configure(
+            text_color=palette.text_primary,
+            fg_color=palette.textbox_bg,
+            border_color=palette.textbox_border,
+        )
+        self.log_textbox.configure(
+            text_color=palette.text_secondary,
+            fg_color=palette.textbox_bg,
+            border_color=palette.textbox_border,
+        )
+        self._content_paned.configure(bg=palette.paned_bg)
+        self.video_player.apply_theme(palette)
+
+        if self._last_transcription_text:
+            self.transcription_textbox.configure(state="normal")
+            insert_clickable_transcription(
+                self._transcription_text,
+                self._last_transcription_text,
+                self._on_timestamp_click,
+                self._on_timestamp_mark_end,
+                link_color=palette.link_color,
+                link_hover=palette.link_hover,
+            )
+
+        if save:
+            save_appearance_mode(mode)
 
     def _set_initial_pane_split(self) -> None:
         """Place divider between video and transcription (~42% for player)."""
@@ -430,17 +531,22 @@ class TranscriptionApp(ctk.CTk):
             self._append_log(f"Failed to save log: {exc}")
 
     def _show_result(self, text: str) -> None:
+        self._last_transcription_text = text
         self._append_log("Transcription complete. Click timestamps on the right to seek.")
         self.transcription_textbox.configure(state="normal")
+        palette = get_palette()
         insert_clickable_transcription(
             self._transcription_text,
             text,
             self._on_timestamp_click,
             self._on_timestamp_mark_end,
+            link_color=palette.link_color,
+            link_hover=palette.link_hover,
         )
         self.transcription_textbox.see("end")
 
     def _clear_transcription_view(self) -> None:
+        self._last_transcription_text = None
         self._transcription_text.configure(state="normal")
         self._transcription_text.delete("1.0", "end")
         self._transcription_text.configure(state="disabled")
@@ -458,7 +564,7 @@ class TranscriptionApp(ctk.CTk):
 
     def _reset_progress(self) -> None:
         self.progress_bar.set(0.0)
-        self.progress_label.configure(text="Progress: 0%")
+        self._progress_label.configure(text="Progress: 0%")
 
     def _append_log(self, message: str) -> None:
         self.log_textbox.insert("end", message + "\n")
@@ -474,7 +580,7 @@ class TranscriptionApp(ctk.CTk):
     def _apply_progress(self, value: float) -> None:
         self.progress_bar.set(value)
         percent = int(value * 100)
-        self.progress_label.configure(text=f"Progress: {percent}%")
+        self._progress_label.configure(text=f"Progress: {percent}%")
 
     def _on_close(self) -> None:
         self.video_player.stop()

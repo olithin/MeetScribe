@@ -7,9 +7,7 @@ from collections.abc import Callable
 import tkinter as tk
 
 from timestamp_utils import TIMESTAMP_IN_BRACKETS, parse_timestamp_label
-
-LINK_COLOR = "#4DA3FF"
-HOVER_COLOR = "#7BC4FF"
+from ui_theme import get_palette
 
 
 def _is_shift_click(event: tk.Event) -> bool:
@@ -34,8 +32,15 @@ def insert_clickable_transcription(
     content: str,
     on_seek: Callable[[float], None],
     on_mark_end: Callable[[float], None] | None = None,
+    *,
+    link_color: str | None = None,
+    link_hover: str | None = None,
 ) -> None:
     """Fill a Text widget; timestamp tokens become clickable seek links."""
+    palette = get_palette()
+    link_fg = link_color or palette.link_color
+    hover_fg = link_hover or palette.link_hover
+
     text_widget.configure(state="normal")
     text_widget.delete("1.0", "end")
 
@@ -61,7 +66,7 @@ def insert_clickable_transcription(
         text_widget.insert("end", token, (tag_name, "timestamp_link"))
         text_widget.insert("end", after + "\n")
 
-        text_widget.tag_configure(tag_name, foreground=LINK_COLOR, underline=True)
+        text_widget.tag_configure(tag_name, foreground=link_fg, underline=True)
 
         def on_click(event: tk.Event, seek_seconds: float = seconds) -> None:
             if on_mark_end is not None and _is_shift_click(event):
@@ -74,11 +79,11 @@ def insert_clickable_transcription(
 
         def on_enter(_event: tk.Event, tag: str = tag_name) -> None:
             text_widget.configure(cursor="hand2")
-            text_widget.tag_configure(tag, foreground=HOVER_COLOR)
+            text_widget.tag_configure(tag, foreground=hover_fg)
 
         def on_leave(_event: tk.Event, tag: str = tag_name) -> None:
             text_widget.configure(cursor="")
-            text_widget.tag_configure(tag, foreground=LINK_COLOR)
+            text_widget.tag_configure(tag, foreground=link_fg)
 
         text_widget.tag_bind(tag_name, "<Enter>", on_enter)
         text_widget.tag_bind(tag_name, "<Leave>", on_leave)

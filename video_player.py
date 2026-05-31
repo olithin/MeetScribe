@@ -9,6 +9,8 @@ from pathlib import Path
 
 import customtkinter as ctk
 
+from ui_theme import ThemePalette, get_palette
+
 
 def _format_time(seconds: float) -> str:
     total = max(0, int(seconds))
@@ -110,20 +112,23 @@ class VideoPlayerPanel(ctk.CTkFrame):
         self._theater_slider_updating = False
         self._embedded_window_id: int | None = None
         self._embedded_surface_size: tuple[int, int] | None = None
+        self._palette = get_palette()
 
         self._build_ui()
         self._try_init_vlc()
 
     def _build_ui(self) -> None:
+        palette = self._palette
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        title = ctk.CTkLabel(
+        self._title_label = ctk.CTkLabel(
             self,
             text="Meeting video",
             font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=palette.text_heading,
         )
-        title.grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
+        self._title_label.grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
 
         self._video_container = ctk.CTkFrame(self, fg_color="#101010", corner_radius=0)
         self._video_container.grid(row=1, column=0, padx=8, pady=4, sticky="nsew")
@@ -140,7 +145,7 @@ class VideoPlayerPanel(ctk.CTkFrame):
         self._opencv_label = tk.Label(
             self._video_surface,
             bg="#101010",
-            fg="#888888",
+            fg=palette.video_overlay_fg,
             text="Select an MP4 file",
         )
         self._opencv_label.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -151,7 +156,7 @@ class VideoPlayerPanel(ctk.CTkFrame):
         self._theater_placeholder_label = ctk.CTkLabel(
             self._theater_placeholder,
             text="Video is playing\nin a separate window (L)",
-            text_color="#666666",
+            text_color=palette.text_muted,
             justify="center",
         )
         self._theater_placeholder_label.grid(row=0, column=0)
@@ -159,7 +164,7 @@ class VideoPlayerPanel(ctk.CTkFrame):
         self._status_label = ctk.CTkLabel(
             self,
             text="Player not loaded",
-            text_color="#AAAAAA",
+            text_color=palette.text_secondary,
             wraplength=400,
             justify="left",
         )
@@ -177,7 +182,11 @@ class VideoPlayerPanel(ctk.CTkFrame):
         )
         self._play_button.grid(row=0, column=0, padx=(0, 8))
 
-        self._time_label = ctk.CTkLabel(controls, text="00:00 / --:--")
+        self._time_label = ctk.CTkLabel(
+            controls,
+            text="00:00 / --:--",
+            text_color=palette.text_secondary,
+        )
         self._time_label.grid(row=0, column=2, padx=(8, 8))
 
         speed_values = [_speed_label(rate) for rate in PLAYBACK_SPEEDS]
@@ -213,17 +222,18 @@ class VideoPlayerPanel(ctk.CTkFrame):
         trim_frame.grid(row=4, column=0, padx=8, pady=(0, 8), sticky="ew")
         trim_frame.grid_columnconfigure(0, weight=1)
 
-        trim_title = ctk.CTkLabel(
+        self._trim_title_label = ctk.CTkLabel(
             trim_frame,
             text="Trim video",
             font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=palette.text_heading,
         )
-        trim_title.grid(row=0, column=0, columnspan=2, padx=8, pady=(8, 4), sticky="w")
+        self._trim_title_label.grid(row=0, column=0, columnspan=2, padx=8, pady=(8, 4), sticky="w")
 
         self._trim_range_label = ctk.CTkLabel(
             trim_frame,
             text="Start: —   End: —",
-            text_color="#AAAAAA",
+            text_color=palette.text_secondary,
             wraplength=400,
             justify="left",
         )
@@ -815,6 +825,22 @@ class VideoPlayerPanel(ctk.CTkFrame):
             self._theater_seek_slider.set(slider_value)
             self._theater_slider_updating = False
 
+    def apply_theme(self, palette: ThemePalette) -> None:
+        """Update panel colors after appearance mode change."""
+        self._palette = palette
+        self._title_label.configure(text_color=palette.text_heading)
+        self._theater_placeholder_label.configure(text_color=palette.text_muted)
+        self._status_label.configure(text_color=palette.text_secondary)
+        self._time_label.configure(text_color=palette.text_secondary)
+        self._trim_title_label.configure(text_color=palette.text_heading)
+        self._trim_range_label.configure(text_color=palette.text_secondary)
+        self._opencv_label.configure(fg=palette.video_overlay_fg)
+        if self._theater_time_label is not None:
+            self._theater_time_label.configure(text_color=palette.text_secondary)
+        theater = self._popup_window
+        if theater is not None and theater.winfo_exists():
+            theater.apply_theme(palette)
+
     def destroy(self) -> None:
         self._close_theater_window()
         self.stop()
@@ -828,7 +854,8 @@ class VideoTheaterWindow(tk.Toplevel):
         super().__init__(player.winfo_toplevel())
         self._player = player
         self._fullscreen = False
-        self.configure(bg="#1a1a1a")
+        palette = player._palette
+        self.configure(bg=palette.theater_chrome_bg)
 
         video_name = player._video_path.name if player._video_path else "MeetScribe"
         self.title(f"MeetScribe — {video_name}")
@@ -862,7 +889,11 @@ class VideoTheaterWindow(tk.Toplevel):
         )
         self._play_button.grid(row=0, column=0, padx=(0, 8))
 
-        self._time_label = ctk.CTkLabel(controls, text="00:00 / --:--")
+        self._time_label = ctk.CTkLabel(
+            controls,
+            text="00:00 / --:--",
+            text_color=palette.text_secondary,
+        )
         self._time_label.grid(row=0, column=2, padx=(8, 8))
 
         speed_values = [_speed_label(rate) for rate in PLAYBACK_SPEEDS]
@@ -902,12 +933,12 @@ class VideoTheaterWindow(tk.Toplevel):
         )
         self._seek_slider.grid(row=1, column=0, columnspan=6, pady=(8, 0), sticky="ew")
 
-        hint = ctk.CTkLabel(
+        self._hint_label = ctk.CTkLabel(
             self,
             text="L — pop-out window | ⛶ — fullscreen | Esc — exit fullscreen",
-            text_color="#888888",
+            text_color=palette.text_muted,
         )
-        hint.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="w")
+        self._hint_label.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="w")
 
         self.transient(player.winfo_toplevel())
         self.bind("<Escape>", lambda _e: self._exit_fullscreen())
@@ -971,6 +1002,14 @@ class VideoTheaterWindow(tk.Toplevel):
         self._fullscreen = False
         self.attributes("-fullscreen", False)
         self._fullscreen_button.configure(text="⛶")
+
+    def apply_theme(self, palette: ThemePalette) -> None:
+        """Update pop-out window chrome after appearance mode change."""
+        if not self.winfo_exists():
+            return
+        self.configure(bg=palette.theater_chrome_bg)
+        self._time_label.configure(text_color=palette.text_secondary)
+        self._hint_label.configure(text_color=palette.text_muted)
 
     def close(self) -> None:
         self._exit_fullscreen()
